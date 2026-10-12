@@ -1,0 +1,20 @@
+# Verification plan
+
+`make verify-design` checks documentation, schema shape, API parse, forbidden strings/secrets, and local path leakage. `make verify` also runs formatting, module verification, vet, ordinary tests, and race-enabled tests. `make verify-phase6` includes the Phase 5 gate and requires a PostgreSQL 18 test URL and an Anvil 1.8.5 binary. `make verify-phase7` starts its own isolated PostgreSQL 18 cluster and pinned Anvil, applies all six migrations, runs the Phase 6 gate, API contract inventory, demo, correctness-gated benchmark, Docker build and clean-copy verification. Tests submit only to ephemeral local Anvil chains.
+
+| Layer | Permanent tests and acceptance evidence |
+| --- | --- |
+| Unit | State transitions, canonical idempotency digest, deterministic type-2 field mapping, uint256 bounds, gas/fee order and caps, signed field equivalence; integer fee bump rounding, caps and property tests; confirmation boundary arithmetic |
+| PostgreSQL | 100+ concurrent reservations across replicas produce unique consecutive ownership; duplicate key race yields one intent; unique constraints reject conflicting nonce; restart resumes all durable states; SQL assertions and race barrier |
+| RPC faults | Anvil accept-then-drop and drop-before-node proxies, already-known, timeout/reset/malformed classification, chain mismatch, null lookup, fallback visibility; one intent/nonce for each initial broadcast scenario |
+| Crash harness | Process exits before signer call, during call, after signature before commit, after signed commit, before RPC, and after node acceptance before state commit; replacement claim/sign/send crash points; receipt/progress/reorg transaction crash points |
+| Reorg | Mine receipt, fork it out, include same or alternative known attempt on new branch, verify canonical depth reset and final convergence; block-hash evidence |
+| Race/fuzz | Concurrent worker leases, claim/reconcile/replacement/receipt races under Go race detector; fuzz request decoder, quantity bounds, fee math, transition validator |
+| Security | Unauthorized signer/call denial, conflicting key, oversized calldata, raw byte redaction, signer mismatch, tenant scope, secret scan |
+| Operational | Readiness under signer/DB/RPC failures, metrics cardinality, bounded retries, restart and clean-copy verification |
+
+Critical implemented invariants are checked at fault points: at most one intent per tenant/key; no two active intents share an owned nonce; no send before signed bytes commit and a fenced claim; signed bytes never change; null lookup never proves absence; a matching receipt selects a provisional winner without asserting finality. Confirmation tests check receipt body membership, canonical block identity, exact depth boundaries, competing branches and deep fail-closed behavior. Run integrations against disposable PostgreSQL and Anvil with ephemeral keys; no public chain transactions.
+
+The Phase 6 suite exercises wrong-chain rejection, endpoint cooldown and recovery, stale head exclusion, conflicting pending/latest nonce views, an external nonce race, startup recovery for active lifecycle states, deterministic cancellation, signer/chain isolation, capped retry timing, bounded status labels, and a bounded active-intent load. `scripts/verify_phase6.py` inventories these boundaries and checks source hygiene; the Go tests provide behavioral evidence.
+
+Phase 7 adds `TestPhase7APIContract`, `TestPhase7APIConcurrentIdempotencyAndRestart`, `TestPhase7ReadinessIsolation`, `TestPhase7MetricCardinality` and `TestPhase7TraceSafety`. `TestPhase7Demo` asserts every fault, replacement, receipt, fork and restart step before writing JSON evidence. `TestPhase7BenchmarkSmoke` validates SQL counts and the deterministic checksum before recording performance. The runner launches the compiled binary against loopback Anvil to check readiness, POST, replay and GET, then validates three independent benchmark runs and reports the unfiltered median; see [benchmark methodology](benchmark.md).

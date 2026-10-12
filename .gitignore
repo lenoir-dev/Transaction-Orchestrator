@@ -1,0 +1,17 @@
+.DS_Store
+.phase7-*/
+.phase8-*/
+.cache/
+__pycache__/
+*.pyc
+dist/
+/txorch
+*.log
+*.zip
+*.tar.gz
+.env
+.env.*
+!.env.example
+artifacts/demo-result.json
+artifacts/benchmark-run-*.json
+artifacts/benchmark-runs.json

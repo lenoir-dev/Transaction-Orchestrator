@@ -1,0 +1,315 @@
+openapi: 3.1.0
+info:
+  title: Transaction Orchestrator API
+  version: 0.1.0
+  description: Local development API for durable transaction intents. A configured bearer token maps to one tenant.
+security:
+  - bearerAuth: []
+paths:
+  /v1/transactions:
+    post:
+      summary: Create or retrieve one durable transaction intent
+      operationId: createTransaction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTransaction' }
+      responses:
+        '201':
+          description: New intent created, nonce reserved and attempt signed
+          headers:
+            Location: { schema: { type: string } }
+            X-Request-ID: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionIntent' }
+        '200':
+          description: Existing intent for a semantically identical request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionIntent' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+  /v1/transactions/{id}:
+    get:
+      summary: Read an intent and its confirmation progress
+      operationId: getTransaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Current durable projection
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionIntent' }
+        '404': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+  /v1/status:
+    get:
+      summary: Operational status, including degraded chains
+      operationId: getStatus
+      responses:
+        '200':
+          description: Bounded runtime, chain, account and build status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationalStatus' }
+        '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+  /health/live:
+    get:
+      summary: Process liveness
+      operationId: liveness
+      security: []
+      responses:
+        '200':
+          description: HTTP process is responding, independent of RPC availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: live }
+  /health/ready:
+    get:
+      summary: Required dependencies and eligible endpoints are ready
+      operationId: readiness
+      security: []
+      responses:
+        '200':
+          description: Configured work can safely progress
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Dependency, runtime, RPC or all configured accounts unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+  /metrics:
+    get:
+      summary: Prometheus exposition; restrict at the network boundary
+      operationId: metrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
+        '503': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Stable per-tenant key; retained through the intent lifetime.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+  responses:
+    Error:
+      description: Stable machine-readable error; no internal database or RPC error text.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    DecimalQuantity:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)$'
+      description: Base-10 integer string; avoid JSON number precision loss.
+    HexData:
+      type: string
+      pattern: '^0x([0-9a-fA-F]{2})*$'
+    Address:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{40}$'
+    Hash:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{64}$'
+    CreateTransaction:
+      type: object
+      additionalProperties: false
+      required: [chain_id, signer_id, to, value_wei, calldata, gas_policy]
+      properties:
+        chain_id: { $ref: '#/components/schemas/DecimalQuantity' }
+        signer_id: { type: string, minLength: 1, description: Configured allowlisted account identity; never a key. }
+        to: { $ref: '#/components/schemas/Address' }
+        value_wei: { $ref: '#/components/schemas/DecimalQuantity' }
+        calldata: { $ref: '#/components/schemas/HexData' }
+        gas_policy:
+          type: object
+          additionalProperties: false
+          required: [profile]
+          properties:
+            profile: { type: string, enum: [standard, cautious] }
+            gas_limit: { type: integer, minimum: 21000, description: If present, must equal the configured profile value. }
+        confirmation_depth: { type: integer, minimum: 1, maximum: 100000, description: If present, must equal the configured profile value. }
+    TransactionIntent:
+      type: object
+      required: [intent_id, state, chain_id, signer_id, to, value_wei, attempts, receipt_history, broadcast, confirmation, account, reorg_events, created_at, updated_at]
+      properties:
+        intent_id: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [CREATED, RESERVED, SIGNING, READY, UNCERTAIN, PENDING, MINED, CONFIRMING, CONFIRMED, REORGED, BLOCKED, FAILED]
+        reason_code: { type: string }
+        chain_id: { $ref: '#/components/schemas/DecimalQuantity' }
+        signer_id: { type: string }
+        to: { $ref: '#/components/schemas/Address' }
+        value_wei: { $ref: '#/components/schemas/DecimalQuantity' }
+        nonce: { $ref: '#/components/schemas/DecimalQuantity' }
+        attempts:
+          type: array
+          items: { $ref: '#/components/schemas/TransactionAttempt' }
+        winning_attempt:
+          description: Present only while a known receipt is canonical on the configured RPC view.
+          $ref: '#/components/schemas/TransactionAttempt'
+        receipt_history:
+          type: array
+          items: { $ref: '#/components/schemas/ReceiptObservation' }
+        reorg_events: { type: integer, minimum: 0 }
+        active_attempt:
+          $ref: '#/components/schemas/TransactionAttempt'
+        broadcast:
+          type: object
+          required: [send_count, observations]
+          properties:
+            send_count: { type: integer, minimum: 0 }
+            observations:
+              type: array
+              items:
+                type: object
+                required: [attempt_number, endpoint, kind, result, count]
+                properties:
+                  attempt_number: { type: integer, minimum: 1 }
+                  endpoint: { type: string }
+                  kind: { type: string }
+                  result: { type: string }
+                  count: { type: integer, minimum: 0 }
+        confirmation:
+          type: object
+          required: [observed, required]
+          properties:
+            observed: { type: integer, minimum: 0 }
+            required: { type: integer, minimum: 1 }
+            block_number: { $ref: '#/components/schemas/DecimalQuantity' }
+            block_hash: { $ref: '#/components/schemas/Hash' }
+            execution_status: { type: integer, enum: [0, 1] }
+            verified_head: { $ref: '#/components/schemas/DecimalQuantity' }
+            max_reorg_depth: { type: integer, minimum: 1, maximum: 1000 }
+        account:
+          type: object
+          required: [reconciliation_status, signer_status]
+          properties:
+            reconciliation_status: { type: string, enum: [TRUSTED_SEED, RECONCILING, READY, BLOCKED_EXTERNAL_NONCE, RPC_UNAVAILABLE] }
+            reconciliation_reason: { type: string }
+            signer_status: { type: string, enum: [UNKNOWN, AVAILABLE, UNAVAILABLE] }
+            blocked_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TransactionAttempt:
+      type: object
+      description: Immutable call/fee identity with current broadcast status; excludes signed raw bytes.
+      required: [attempt_id, attempt_number, status, nonce, gas_limit, max_fee_per_gas, max_priority_fee_per_gas]
+      properties:
+        attempt_id: { type: string, format: uuid }
+        attempt_number: { type: integer, minimum: 1 }
+        replaces_attempt_id: { type: string, format: uuid }
+        transaction_hash: { $ref: '#/components/schemas/Hash' }
+        status: { type: string, enum: [PREPARING, SIGNED, BROADCAST_CLAIMED, OBSERVED, REJECTED, NOT_BROADCAST] }
+        nonce: { $ref: '#/components/schemas/DecimalQuantity' }
+        gas_limit: { type: integer, minimum: 1 }
+        max_fee_per_gas: { $ref: '#/components/schemas/DecimalQuantity' }
+        max_priority_fee_per_gas: { $ref: '#/components/schemas/DecimalQuantity' }
+    ReceiptObservation:
+      type: object
+      required: [attempt_number, transaction_hash, block_number, block_hash, execution_status, verification, confirmations, observed_at]
+      properties:
+        attempt_number: { type: integer, minimum: 1 }
+        transaction_hash: { $ref: '#/components/schemas/Hash' }
+        block_number: { $ref: '#/components/schemas/DecimalQuantity' }
+        block_hash: { $ref: '#/components/schemas/Hash' }
+        transaction_index: { $ref: '#/components/schemas/DecimalQuantity' }
+        gas_used: { $ref: '#/components/schemas/DecimalQuantity' }
+        effective_gas_price: { $ref: '#/components/schemas/DecimalQuantity' }
+        execution_status: { type: integer, enum: [0, 1] }
+        verification: { type: string, enum: [UNVERIFIED, CANONICAL, ORPHANED] }
+        confirmations: { type: integer, minimum: 0 }
+        observed_at: { type: string, format: date-time }
+        last_verified_at: { type: string, format: date-time }
+    ApiError:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          description: E.g. IDEMPOTENCY_CONFLICT, POLICY_DENIED, CHAIN_PAUSED, INVALID_REQUEST.
+        message: { type: string }
+        request_id: { type: string, minLength: 1, maxLength: 64 }
+    Readiness:
+      type: object
+      required: [ready, reasons]
+      properties:
+        ready: { type: boolean }
+        reasons:
+          type: array
+          items: { type: string, enum: [database_unavailable, runtime_not_started, no_eligible_rpc, wrong_chain_rpc, no_ready_account, manual_reorg_intervention] }
+    OperationalStatus:
+      type: object
+      required: [status, readiness, chains, runtime, build]
+      properties:
+        status: { type: string, enum: [healthy, degraded] }
+        readiness: { $ref: '#/components/schemas/Readiness' }
+        chains:
+          type: array
+          items:
+            type: object
+            required: [chain_id, eligible_rpc_count, head, stale_endpoints, degraded_endpoints, ready]
+            properties:
+              chain_id: { $ref: '#/components/schemas/DecimalQuantity' }
+              eligible_rpc_count: { type: integer, minimum: 0 }
+              head: { type: integer, minimum: 0 }
+              stale_endpoints: { type: integer, minimum: 0 }
+              degraded_endpoints: { type: integer, minimum: 0 }
+              ready: { type: boolean }
+        runtime:
+          type: object
+          required: [active_workers, queued, backlog, endpoints, chains, account_states, blocked_reasons, reconciliation_counts]
+          properties:
+            active_workers: { type: integer, minimum: 0 }
+            queued: { type: integer, minimum: 0 }
+            backlog: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+            endpoints: { type: array, items: { type: object } }
+            chains: { type: array, items: { type: object } }
+            account_states: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+            blocked_reasons: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+            reconciliation_counts: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+        build:
+          type: object
+          required: [version, source_identity, go_version]
+          properties:
+            version: { type: string }
+            source_identity: { type: string }
+            go_version: { type: string }
